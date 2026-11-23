@@ -3,15 +3,34 @@ import { redirect } from 'next/navigation'
 import sql from '@/lib/db'
 import type { RoleStatus } from '@/lib/types'
 
-export const auth = createNeonAuth({
-  baseUrl: process.env.NEON_AUTH_BASE_URL!,
-  cookies: { secret: process.env.NEON_AUTH_COOKIE_SECRET! },
+type NeonAuth = ReturnType<typeof createNeonAuth>
+
+let _auth: NeonAuth | null = null
+
+// Dibuat saat pertama dipakai (runtime), bukan saat modul di-import (build).
+export function getAuth(): NeonAuth {
+  if (!_auth) {
+    _auth = createNeonAuth({
+      baseUrl: process.env.NEON_AUTH_BASE_URL!,
+      cookies: { secret: process.env.NEON_AUTH_COOKIE_SECRET! },
+    })
+  }
+  return _auth
+}
+
+// Kompatibel dengan kode lama: auth.getSession(), auth.handler(), dst.
+export const auth = new Proxy({} as NeonAuth, {
+  get(_target, prop) {
+    const real = getAuth()
+    const value = Reflect.get(real, prop)
+    return typeof value === 'function' ? value.bind(real) : value
+  },
 })
 
 export type Role = 'owner' | 'kasir'
 
 export async function getSessionUser() {
-  const { data: session } = await auth.getSession()
+  const { data: session } = await getAuth().getSession()
   return session?.user ?? null
 }
 
