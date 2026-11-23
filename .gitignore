@@ -35,6 +35,10 @@ yarn-error.log*
 
 .env.local
 
+.open-next
+.dev.vars
+.wrangler
+
 # vercel
 .vercel
 
