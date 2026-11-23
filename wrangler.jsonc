@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kasirku",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-11-19",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "binding": "ASSETS",
+    "directory": ".open-next/assets"
+  },
+  "services": [
+    {
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "kasirku"
+    }
+  ],
+  "vars": {
+    "KENARI_BASE": "https://kenari.id/v1",
+    "KENARI_MODEL": "glm-4-7-flash:free"
+  },
+  "observability": { "enabled": true }
+}
