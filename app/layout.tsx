@@ -6,7 +6,7 @@ import AssistantBubble from '@/components/AssistantBubble'
 import { APPEARANCE_DEFAULT, FONT_PRESETS } from '@/lib/appearance'
 import { ensureRoleRow, getSessionUser } from '@/lib/auth/server'
 import { getLowStock, getSettings } from '@/lib/data'
-
+export const dynamic = 'force-dynamic'
 export const metadata: Metadata = {
   title: 'KasirKu — POS, Stok & Keuangan',
   description: 'Sistem kasir, manajemen stok, pencatatan pendapatan & pengeluaran, dan kalkulator HPP. Backend Neon Lakebase Postgres.',
