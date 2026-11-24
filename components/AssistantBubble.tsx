@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { useRouter } from 'next/navigation'
 
 type Msg = { role: 'user' | 'assistant'; content: string }
 
@@ -18,6 +19,27 @@ const THINKING = [
   'Bertanya ke mesin kasir…',
   'Hampir ketemu…',
 ]
+
+// Halaman yang boleh dituju lewat tombol pintasan dari jawaban AI
+const ALLOWED = new Set([
+  '/kasir', '/riwayat', '/stok', '/keuangan', '/laporan',
+  '/analitik', '/hpp', '/pelanggan', '/tim', '/pengaturan',
+])
+
+// Ambil token [[Label|/path]] dari teks jawaban, ubah jadi daftar tombol
+function splitActions(raw: string) {
+  const actions: { label: string; href: string }[] = []
+  const body = raw
+    .replace(/\[\[([^\]|]{1,40})\|(\/[a-z]*)\]\]/g, (_m, label: string, href: string) => {
+      if (ALLOWED.has(href) && actions.length < 3 && !actions.some((a) => a.href === href)) {
+        actions.push({ label: label.trim(), href })
+      }
+      return ''
+    })
+    .replace(/\[\[[^\]]*\]?$/, '') // token yang belum selesai saat streaming
+    .trim()
+  return { body, actions }
+}
 
 function Inline({ text }: { text: string }) {
   const parts = text.split(/(\*\*[^*]+\*\*)/g)
@@ -95,6 +117,7 @@ function Thinking() {
 }
 
 export default function AssistantBubble() {
+  const router = useRouter()
   const [open, setOpen] = useState(false)
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [input, setInput] = useState('')
@@ -104,6 +127,13 @@ export default function AssistantBubble() {
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [msgs, busy, open])
+
+  // Pindah halaman tanpa reload; chat tetap ada karena bubble hidup di layout.
+  // Di HP panel ditutup supaya halaman tujuan kelihatan; di desktop tetap terbuka.
+  const go = (href: string) => {
+    router.push(href)
+    if (window.innerWidth < 768) setOpen(false)
+  }
 
   const send = async (text: string) => {
     const t = text.trim()
@@ -201,34 +231,51 @@ export default function AssistantBubble() {
                 </div>
               </>
             )}
-            {msgs.map((m, i) => (
-              <div
-                key={i}
-                style={{
-                  alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
-                  maxWidth: '85%',
-                  padding: '8px 12px',
-                  borderRadius: 14,
-                  whiteSpace: m.role === 'user' ? 'pre-wrap' : 'normal',
-                  overflowWrap: 'anywhere',
-                  fontSize: 14,
-                  lineHeight: 1.45,
-                  background: m.role === 'user' ? 'var(--green-deep, #1d5c4a)' : 'var(--cream, #fdf6ec)',
-                  color: m.role === 'user' ? '#fff' : 'var(--ink, #222)',
-                  border: m.role === 'user' ? 'none' : '1px solid var(--line, #e5dcc9)',
-                }}
-              >
-                {m.role === 'user' ? (
-                  m.content
-                ) : m.content ? (
-                  <Markdown text={m.content} />
-                ) : busy && i === msgs.length - 1 ? (
-                  <Thinking />
-                ) : (
-                  ''
-                )}
-              </div>
-            ))}
+            {msgs.map((m, i) => {
+              const isLast = i === msgs.length - 1
+              const streaming = busy && isLast
+              const { body, actions } = m.role === 'assistant' ? splitActions(m.content) : { body: m.content, actions: [] }
+
+              return (
+                <div
+                  key={i}
+                  style={{
+                    alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
+                    maxWidth: '85%',
+                    padding: '8px 12px',
+                    borderRadius: 14,
+                    whiteSpace: m.role === 'user' ? 'pre-wrap' : 'normal',
+                    overflowWrap: 'anywhere',
+                    fontSize: 14,
+                    lineHeight: 1.45,
+                    background: m.role === 'user' ? 'var(--green-deep, #1d5c4a)' : 'var(--cream, #fdf6ec)',
+                    color: m.role === 'user' ? '#fff' : 'var(--ink, #222)',
+                    border: m.role === 'user' ? 'none' : '1px solid var(--line, #e5dcc9)',
+                  }}
+                >
+                  {m.role === 'user' ? (
+                    m.content
+                  ) : body ? (
+                    <>
+                      <Markdown text={body} />
+                      {!streaming && actions.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                          {actions.map((a) => (
+                            <button key={a.href} type="button" className="chip" onClick={() => go(a.href)}>
+                              {a.label} →
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : streaming ? (
+                    <Thinking />
+                  ) : (
+                    ''
+                  )}
+                </div>
+              )
+            })}
             <div ref={endRef} />
           </div>
 
