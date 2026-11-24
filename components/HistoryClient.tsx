@@ -1,13 +1,17 @@
 'use client'
 
-import { useMemo, useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useEffect, useMemo, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { voidSale } from '@/lib/actions'
 import { rupiah, tanggal } from '@/lib/format'
 import type { PayMethod, Sale } from '@/lib/types'
 
 const METHOD_LABEL: Record<PayMethod, string> = { tunai: 'Tunai', qris: 'QRIS', transfer: 'Transfer', kasbon: 'Kasbon' }
 const PAGE_SIZES = [10, 25, 50]
+
+type Filter = 'all' | PayMethod | 'void'
+const FILTERS = ['all', 'tunai', 'qris', 'transfer', 'kasbon', 'void']
+const asFilter = (v: string | null): Filter => (FILTERS.includes(v ?? '') ? (v as Filter) : 'all')
 
 const stickyTh: React.CSSProperties = {
   position: 'sticky',
@@ -30,14 +34,22 @@ function pageList(current: number, total: number): (number | '…')[] {
 
 export default function HistoryClient({ sales }: { sales: Sale[] }) {
   const router = useRouter()
-  const [q, setQ] = useState('')
-  const [filter, setFilter] = useState<'all' | PayMethod | 'void'>('all')
+  const sp = useSearchParams()
+  const [q, setQ] = useState(() => sp.get('q') ?? '')
+  const [filter, setFilter] = useState<Filter>(() => asFilter(sp.get('filter')))
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [detail, setDetail] = useState<Sale | null>(null)
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+
+  // Sinkron saat pintasan dari asisten diklik ketika sudah berada di halaman ini
+  useEffect(() => {
+    setFilter(asFilter(sp.get('filter')))
+    setQ(sp.get('q') ?? '')
+    setPage(1)
+  }, [sp])
 
   const visible = useMemo(() => {
     const qq = q.trim().toLowerCase()

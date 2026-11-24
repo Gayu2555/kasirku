@@ -25,21 +25,43 @@ const ALLOWED = new Set([
   '/kasir', '/riwayat', '/stok', '/keuangan', '/laporan',
   '/analitik', '/hpp', '/pelanggan', '/tim', '/pengaturan',
 ])
+const ALLOWED_PARAMS = new Set(['filter', 'q'])
 
-// Ambil token [[Label|/path]] dari teks jawaban, ubah jadi daftar tombol
+// Validasi tujuan: path harus di whitelist, query hanya filter/q dengan nilai aman
+function safeHref(h: string): string | null {
+  const [path, query = ''] = h.split('?')
+  if (!ALLOWED.has(path)) return null
+  const clean = new URLSearchParams()
+  for (const [k, v] of new URLSearchParams(query)) {
+    if (!ALLOWED_PARAMS.has(k) || v.length > 40 || /[<>"'`]/.test(v)) continue
+    clean.set(k, v)
+  }
+  const s = clean.toString()
+  return s ? `${path}?${s}` : path
+}
+
 function splitActions(raw: string) {
   const actions: { label: string; href: string }[] = []
+  const followups: string[] = []
   const body = raw
-    .replace(/\[\[([^\]|]{1,40})\|(\/[a-z]*)\]\]/g, (_m, label: string, href: string) => {
-      if (ALLOWED.has(href) && actions.length < 3 && !actions.some((a) => a.href === href)) {
-        actions.push({ label: label.trim(), href })
+    .replace(/\[\[\?([^\]]{3,60})\]\]/g, (_m, q: string) => {
+      if (followups.length < 3) followups.push(q.trim())
+      return ''
+    })
+    .replace(/\[\[([^\]|]{1,40})\|(\/[a-z]*(?:\?[A-Za-z0-9=&_.%+-]{1,80})?)\]\]/g, (_m, label: string, href: string) => {
+      const safe = safeHref(href)
+      if (safe && actions.length < 3 && !actions.some((a) => a.href === safe)) {
+        actions.push({ label: label.trim(), href: safe })
       }
       return ''
     })
     .replace(/\[\[[^\]]*\]?$/, '') // token yang belum selesai saat streaming
     .trim()
-  return { body, actions }
+  return { body, actions, followups }
 }
+
+// Ambil token [[Label|/path]] dari teks jawaban, ubah jadi daftar tombol
+
 
 function Inline({ text }: { text: string }) {
   const parts = text.split(/(\*\*[^*]+\*\*)/g)
