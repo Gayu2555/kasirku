@@ -40,12 +40,14 @@ function safeHref(h: string): string | null {
   return s ? `${path}?${s}` : path
 }
 
+// Pisahkan teks jawaban dari token tombol [[Label|/path]] dan saran [[?Pertanyaan]]
 function splitActions(raw: string) {
   const actions: { label: string; href: string }[] = []
   const followups: string[] = []
   const body = raw
-    .replace(/\[\[\?([^\]]{3,60})\]\]/g, (_m, q: string) => {
-      if (followups.length < 3) followups.push(q.trim())
+    .replace(/\[\[\s*\?\s*([^\]]{3,60}?)\s*\]\]/g, (_m, q: string) => {
+      const t = q.trim()
+      if (followups.length < 3 && !followups.includes(t)) followups.push(t)
       return ''
     })
     .replace(/\[\[([^\]|]{1,40})\|(\/[a-z]*(?:\?[A-Za-z0-9=&_.%+-]{1,80})?)\]\]/g, (_m, label: string, href: string) => {
@@ -56,12 +58,10 @@ function splitActions(raw: string) {
       return ''
     })
     .replace(/\[\[[^\]]*\]?$/, '') // token yang belum selesai saat streaming
+    .replace(/[,;\s]+$/, '') // sisa koma/spasi di ujung setelah token dibuang
     .trim()
   return { body, actions, followups }
 }
-
-// Ambil token [[Label|/path]] dari teks jawaban, ubah jadi daftar tombol
-
 
 function Inline({ text }: { text: string }) {
   const parts = text.split(/(\*\*[^*]+\*\*)/g)
@@ -160,8 +160,12 @@ export default function AssistantBubble() {
   const send = async (text: string) => {
     const t = text.trim()
     if (!t || busy) return
-    const next: Msg[] = [...msgs, { role: 'user', content: t }]
-    setMsgs([...next, { role: 'assistant', content: '' }])
+    // Kirim ke server tanpa token tombol/saran, supaya riwayat tetap bersih
+    const next: Msg[] = [
+      ...msgs.map((m) => (m.role === 'assistant' ? { ...m, content: splitActions(m.content).body } : m)),
+      { role: 'user', content: t },
+    ]
+    setMsgs([...msgs, { role: 'user', content: t }, { role: 'assistant', content: '' }])
     setInput('')
     setBusy(true)
 
@@ -256,7 +260,10 @@ export default function AssistantBubble() {
             {msgs.map((m, i) => {
               const isLast = i === msgs.length - 1
               const streaming = busy && isLast
-              const { body, actions } = m.role === 'assistant' ? splitActions(m.content) : { body: m.content, actions: [] }
+              const { body, actions, followups } =
+                m.role === 'assistant'
+                  ? splitActions(m.content)
+                  : { body: m.content, actions: [] as { label: string; href: string }[], followups: [] as string[] }
 
               return (
                 <div
@@ -285,6 +292,15 @@ export default function AssistantBubble() {
                           {actions.map((a) => (
                             <button key={a.href} type="button" className="chip" onClick={() => go(a.href)}>
                               {a.label} →
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {!busy && isLast && followups.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                          {followups.map((q) => (
+                            <button key={q} type="button" className="chip" onClick={() => send(q)}>
+                              {q}
                             </button>
                           ))}
                         </div>
