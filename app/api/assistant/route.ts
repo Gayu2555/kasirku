@@ -108,6 +108,7 @@ ${JSON.stringify(snapshot)}`
     stream: true,
     temperature: 0.3,
     max_tokens: 1200,
+    reasoning: { enabled: false },
     messages: [{ role: 'system', content: systemPrompt }, ...history],
   })
 
