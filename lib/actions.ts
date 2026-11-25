@@ -7,12 +7,25 @@ import { actionGuard } from './auth/server'
 import { serializeNav } from './nav'
 import { isAccentId, isDensity, isFontId } from './appearance'
 import { hhmmToMin, isValidHHMM } from './promo'
+import { uploadImage, deleteImage } from './storage'
 import type { PayMethod, Receipt, StoreSettings } from './types'
 
 type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string }
 
+export type { Result }
+
 const fail = (error: string): Result<never> => ({ ok: false, error })
 const done = () => revalidatePath('/', 'layout')
+
+export async function uploadProductImage(file: File): Promise<Result<{ url: string }>> {
+  if (!(await actionGuard('owner'))) return fail('Aksi ini khusus owner')
+  try {
+    const url = await uploadImage(file)
+    return { ok: true, url }
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Gagal mengunggah gambar')
+  }
+}
 
 export async function checkout(
   items: { productId: string; qty: number; note?: string }[],
@@ -167,23 +180,44 @@ export async function saveProduct(input: {
   stock: number
   unit: string
   min_stock: number
+  image?: File
+  deleteImage: boolean
 }): Promise<Result> {
   if (!(await actionGuard('owner'))) return fail('Aksi ini khusus owner')
   if (!input.name.trim()) return fail('Nama produk wajib diisi')
   if (input.price < 0 || input.cost < 0 || input.stock < 0 || input.min_stock < 0)
     return fail('Angka tidak boleh negatif')
   try {
+    let existingProduct: { image_url: string }[] = []
+    if (input.id) {
+      existingProduct = await sql`select image_url from products where id = ${input.id}`
+    }
+    let imageUrl = existingProduct[0]?.image_url ?? ''
+    
+    if (input.deleteImage && existingProduct[0]?.image_url) {
+      // Delete existing image
+      await deleteImage(existingProduct[0].image_url)
+      imageUrl = ''
+    } else if (input.image) {
+      // Upload new image
+      imageUrl = await uploadImage(input.image)
+      // Delete old image if exists
+      if (existingProduct[0]?.image_url) {
+        await deleteImage(existingProduct[0].image_url)
+      }
+    }
+    
     if (input.id) {
       await sql`
         update products set
           name = ${input.name}, category = ${input.category}, price = ${input.price},
           cost = ${input.cost}, unit = ${input.unit}, min_stock = ${input.min_stock},
-          sku = ${input.sku?.trim() || null}
+          sku = ${input.sku?.trim() || null}, image_url = ${imageUrl}
         where id = ${input.id}`
     } else {
       const [p] = await sql`
-        insert into products (name, category, price, cost, stock, unit, min_stock, sku)
-        values (${input.name}, ${input.category}, ${input.price}, ${input.cost}, ${input.stock}, ${input.unit}, ${input.min_stock}, ${input.sku?.trim() || null})
+        insert into products (name, category, price, cost, stock, unit, min_stock, sku, image_url)
+        values (${input.name}, ${input.category}, ${input.price}, ${input.cost}, ${input.stock}, ${input.unit}, ${input.min_stock}, ${input.sku?.trim() || null}, ${imageUrl})
         returning id`
       if (input.stock > 0) {
         await sql`

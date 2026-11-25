@@ -1,0 +1,7 @@
+Terminal adalah PowerShell di Windows. Jangan pakai sintaks CMD (dir /B, 2>NUL).
+Pakai Get-ChildItem untuk melihat isi folder.
+Jangan jelajahi folder sendiri, pakai path file yang saya sebut.
+
+Jangan berhenti sebelum tugas benar-benar selesai dan diverifikasi.
+Setelah edit, jalankan npm run build sendiri dan perbaiki errornya.
+Selalu panggil tool dengan benar, jangan tulis tool call sebagai teks.

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { adjustStock, fetchMoves, saveProduct, stockOpname } from '@/lib/actions'
+import { adjustStock, fetchMoves, saveProduct, stockOpname, uploadProductImage } from '@/lib/actions'
 import { rupiah, tanggal } from '@/lib/format'
 import Icon from './Icon'
 import type { Product, StockMove } from '@/lib/types'
@@ -17,6 +17,10 @@ interface FormState {
   stock: string
   unit: string
   min_stock: string
+  image?: File
+  imagePreview?: string
+  originalImage?: string
+  deleteImage: boolean
 }
 
 const emptyForm: FormState = {
@@ -28,7 +32,10 @@ const emptyForm: FormState = {
   stock: '0',
   unit: 'porsi',
   min_stock: '5',
+  deleteImage: false,
 }
+
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 export default function StockClient({ products }: { products: Product[] }) {
   const router = useRouter()
@@ -62,6 +69,9 @@ export default function StockClient({ products }: { products: Product[] }) {
       stock: String(p.stock),
       unit: p.unit,
       min_stock: String(p.min_stock),
+      imagePreview: p.image_url,
+      originalImage: p.image_url,
+      deleteImage: false,
     })
   }
 
@@ -115,10 +125,53 @@ export default function StockClient({ products }: { products: Product[] }) {
     }
   }
 
+  const closeForm = () => {
+    if (form?.image && form.imagePreview) URL.revokeObjectURL(form.imagePreview)
+    setForm(null)
+  }
+
+  const pickImage = (file?: File) => {
+    if (!file) return
+    if (!file.type.startsWith('image/')) {
+      setError('File harus berupa gambar (JPEG, PNG, WebP)')
+      return
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setError('Ukuran gambar maksimal 5MB')
+      return
+    }
+    setError('')
+    if (form?.image && form.imagePreview) URL.revokeObjectURL(form.imagePreview)
+    const url = URL.createObjectURL(file)
+    setForm((f) => (f ? { ...f, image: file, imagePreview: url, deleteImage: false } : f))
+  }
+
+  // Hapus: kalau ada file baru -> batalkan file baru; kalau gambar lama -> tandai untuk dihapus
+  const removeImage = () => {
+    if (form?.image && form.imagePreview) URL.revokeObjectURL(form.imagePreview)
+    setForm((f) => {
+      if (!f) return f
+      if (f.image) return { ...f, image: undefined, imagePreview: f.originalImage, deleteImage: false }
+      return { ...f, deleteImage: true }
+    })
+  }
+
   const submitForm = async () => {
     if (!form) return
     setBusy(true)
     setError('')
+
+    let imageFile = undefined
+    if (form.image) {
+      const uploadRes = await uploadProductImage(form.image)
+      if (!uploadRes.ok) {
+        setBusy(false)
+        setError(uploadRes.error)
+        return
+      }
+      imageFile = form.image
+    }
+
     const res = await saveProduct({
       id: form.id,
       sku: form.sku,
@@ -129,10 +182,12 @@ export default function StockClient({ products }: { products: Product[] }) {
       stock: Number(form.stock) || 0,
       unit: form.unit.trim() || 'pcs',
       min_stock: Number(form.min_stock) || 0,
+      image: imageFile,
+      deleteImage: form.deleteImage,
     })
     setBusy(false)
     if (res.ok) {
-      setForm(null)
+      closeForm()
       setToast(form.id ? 'Produk diperbarui' : 'Produk ditambahkan')
       router.refresh()
     } else {
@@ -159,65 +214,146 @@ export default function StockClient({ products }: { products: Product[] }) {
   const set = (key: keyof FormState) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm((f) => (f ? { ...f, [key]: e.target.value } : f))
 
+  const previewUrl = form && !form.deleteImage ? form.imagePreview : undefined
+  const canRemoveImage = !!form && !form.deleteImage && !!form.imagePreview
+
   return (
     <>
-      <div className="card">
-        <div className="page-head" style={{ marginBottom: 12 }}>
-          <h2 className="section-title" style={{ margin: 0 }}>Daftar produk</h2>
-          <div className="page-head-actions">
-            <button className="btn btn-ghost" onClick={openOpname}>
+      <div className="bg-card border border-[var(--line)] rounded-[16px] p-5 shadow-[0_1px_3px_var(--shadow-c)]">
+        <div className="flex justify-between items-center mb-3 flex-wrap gap-3">
+          <h2 className="font-serif text-[19px] text-ink font-semibold mb-0">Daftar produk</h2>
+          <div className="flex gap-2">
+            <button className="btn btn-ghost flex items-center gap-1.5" onClick={openOpname}>
               <Icon name="clipboard" size={16} /> Stock opname
             </button>
             <button className="btn btn-primary" onClick={openCreate}>+ Tambah produk</button>
           </div>
         </div>
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Produk</th>
-              <th>Kategori</th>
-              <th className="num">Harga jual</th>
-              <th className="num">HPP</th>
-              <th className="num">Stok</th>
-              <th className="num">Min</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {products.map((p) => (
-              <tr key={p.id}>
-                <td style={{ color: 'var(--ink)', fontWeight: 600 }}>
-                  <span className="stock-name">
-                    {p.image_url
-                      ? <img className="stock-thumb" src={p.image_url} alt={p.name} loading="lazy" />
-                      : <span className="stock-thumb stock-thumb-empty" aria-hidden>{p.name.slice(0, 1)}</span>}
-                    {p.name}
-                  </span>
-                </td>
-                <td>{p.category}</td>
-                <td className="num">{rupiah(p.price)}</td>
-                <td className="num">{rupiah(p.cost)}</td>
-                <td className="num">
-                  <span className={`badge ${p.stock <= p.min_stock ? 'low' : 'ok'}`}>
-                    {p.stock} {p.unit}
-                  </span>
-                </td>
-                <td className="num">{p.min_stock}</td>
-                <td className="num" style={{ whiteSpace: 'nowrap' }}>
-                  <button className="btn btn-ghost btn-sm" onClick={() => openEdit(p)}>Edit</button>{' '}
-                  <button className="btn btn-ghost btn-sm" onClick={() => openAdjust(p)}>Stok</button>
-                </td>
+
+        <div className="overflow-x-auto">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Produk</th>
+                <th>Kategori</th>
+                <th className="num">Harga jual</th>
+                <th className="num">HPP</th>
+                <th className="num">Stok</th>
+                <th className="num">Min</th>
+                <th></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {products.map((p) => {
+                const low = p.stock <= p.min_stock
+                return (
+                  <tr key={p.id}>
+                    <td>
+                      <div className="flex items-center gap-3">
+                        <div className="w-[34px] h-[34px] flex-shrink-0 rounded-[8px] overflow-hidden border border-[var(--line)] bg-[var(--cream)] flex items-center justify-center">
+                          {p.image_url ? (
+                            <img src={p.image_url} alt={p.name} loading="lazy" className="w-full h-full object-cover" />
+                          ) : (
+                            <span className="text-[13px] font-semibold text-[var(--muted)]">
+                              {p.name.slice(0, 1).toUpperCase()}
+                            </span>
+                          )}
+                        </div>
+                        <span style={{ color: 'var(--ink)', fontWeight: 600 }}>{p.name}</span>
+                      </div>
+                    </td>
+                    <td>{p.category}</td>
+                    <td className="num">{rupiah(p.price)}</td>
+                    <td className="num">{rupiah(p.cost)}</td>
+                    <td className="num">
+                      <span className={`badge ${low ? 'low' : 'ok'}`}>{p.stock} {p.unit}</span>
+                    </td>
+                    <td className="num">{p.min_stock}</td>
+                    <td className="num">
+                      <div className="flex justify-end gap-2">
+                        <button className="btn btn-ghost btn-sm" onClick={() => openEdit(p)}>Edit</button>
+                        <button className="btn btn-ghost btn-sm" onClick={() => openAdjust(p)}>Stok</button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {form && (
-        <div className="modal-overlay" onClick={() => setForm(null)}>
+        <div className="modal-overlay" onClick={closeForm}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h2>{form.id ? 'Edit produk' : 'Tambah produk'}</h2>
             <div className="form-grid">
+              <div className="field" style={{ gridColumn: '1 / -1' }}>
+                Gambar produk
+                <div className="flex items-center gap-4 mt-1.5">
+                  <div className="relative w-[104px] h-[104px] flex-shrink-0 rounded-[14px] overflow-hidden border border-dashed border-[var(--line)] bg-[var(--cream)] flex items-center justify-center">
+                    {previewUrl ? (
+                      <img src={previewUrl} alt="Preview gambar" className="w-full h-full object-cover" />
+                    ) : (
+                      <svg
+                        width="32"
+                        height="32"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="text-[var(--muted)] opacity-60"
+                        aria-hidden="true"
+                      >
+                        <rect x="3" y="3" width="18" height="18" rx="3" />
+                        <circle cx="8.5" cy="8.5" r="1.5" />
+                        <path d="m21 15-5-5L5 21" />
+                      </svg>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col gap-2 min-w-0">
+                    <div className="flex flex-wrap gap-2">
+                      <label className="btn btn-ghost btn-sm cursor-pointer">
+                        {previewUrl ? 'Ganti gambar' : 'Pilih gambar'}
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          className="hidden"
+                          onChange={(e) => {
+                            pickImage(e.target.files?.[0])
+                            e.target.value = ''
+                          }}
+                        />
+                      </label>
+                      {canRemoveImage && (
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={removeImage}>
+                          Hapus
+                        </button>
+                      )}
+                      {form.deleteImage && (
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => setForm((f) => (f ? { ...f, deleteImage: false } : f))}
+                        >
+                          Batalkan hapus
+                        </button>
+                      )}
+                    </div>
+                    <span className="text-[12px] text-[var(--muted)] leading-snug">
+                      {form.deleteImage
+                        ? 'Gambar akan dihapus saat disimpan.'
+                        : form.image
+                          ? `${form.image.name} · ${(form.image.size / 1024).toFixed(0)} KB`
+                          : 'JPEG, PNG, atau WebP. Maksimal 5MB.'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
               <label className="field" style={{ gridColumn: '1 / -1' }}>
                 Nama
                 <input className="input" value={form.name} onChange={set('name')} />
@@ -235,6 +371,10 @@ export default function StockClient({ products }: { products: Product[] }) {
                 <input className="input" value={form.unit} onChange={set('unit')} />
               </label>
               <label className="field">
+                Stok minimum
+                <input className="input" type="number" min={0} value={form.min_stock} onChange={set('min_stock')} />
+              </label>
+              <label className="field">
                 Harga jual (Rp)
                 <input className="input" type="number" min={0} value={form.price} onChange={set('price')} />
               </label>
@@ -248,10 +388,6 @@ export default function StockClient({ products }: { products: Product[] }) {
                   <input className="input" type="number" min={0} value={form.stock} onChange={set('stock')} />
                 </label>
               )}
-              <label className="field">
-                Stok minimum
-                <input className="input" type="number" min={0} value={form.min_stock} onChange={set('min_stock')} />
-              </label>
             </div>
             {form.id && (
               <p className="muted" style={{ marginTop: 10 }}>
@@ -260,7 +396,7 @@ export default function StockClient({ products }: { products: Product[] }) {
             )}
             {error && <p className="error-text">{error}</p>}
             <div className="modal-actions">
-              <button className="btn btn-ghost" onClick={() => setForm(null)}>Batal</button>
+              <button className="btn btn-ghost" onClick={closeForm}>Batal</button>
               <button className="btn btn-primary" disabled={busy} onClick={submitForm}>
                 {busy ? 'Menyimpan…' : 'Simpan'}
               </button>

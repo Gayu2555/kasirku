@@ -1,11 +1,21 @@
 import sql from '@/lib/db'
 import { getBusyHours, getCustomers, getMoves, getProducts, getSettings, getShifts, getTeam } from '@/lib/data'
-import type { Customer, Product } from '@/lib/types'
+import type { Customer, Product, StoreSettings } from '@/lib/types'
 
 const WIB = 7 * 3600000
 const DAY = 86400000
 const MAX_CHARS = 14000 // batas total data tambahan supaya muat di model gratis
 const DAYS = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu']
+
+const WORD_NUM: Record<string, number> = {
+  satu: 1, dua: 2, tiga: 3, empat: 4, lima: 5, enam: 6, tujuh: 7, delapan: 8, sembilan: 9, sepuluh: 10,
+}
+const MONTHS: Record<string, number> = {
+  januari: 0, jan: 0, februari: 1, feb: 1, maret: 2, mar: 2, april: 3, apr: 3, mei: 4,
+  juni: 5, jun: 5, juli: 6, jul: 6, agustus: 7, agu: 7, september: 8, sep: 8,
+  oktober: 9, okt: 9, november: 10, nov: 10, desember: 11, des: 11,
+}
+const BULAN_RE = Object.keys(MONTHS).join('|')
 
 const STOP = new Set([
   'yang', 'dan', 'apa', 'berapa', 'untuk', 'hari', 'bulan', 'minggu', 'pekan', 'stok', 'produk', 'total',
@@ -35,21 +45,37 @@ function bounds(r: Range) {
   return { a: start.toISOString(), b: end.toISOString() }
 }
 
-function parseRange(q: string): Range | null {
+export function parseRange(qRaw: string): Range | null {
   const now = wibNow()
   const today = ymd(now)
   const dow = (now.getUTCDay() + 6) % 7 // 0 = Senin
   const monday = addDays(now, -dow)
+
+  // Angka terbilang: "dua hari", "tiga minggu" → 2, 3
+  const q = qRaw.replace(
+    /\b(satu|dua|tiga|empat|lima|enam|tujuh|delapan|sembilan|sepuluh)\s+(hari|minggu|pekan)\b/g,
+    (_m, w: string, u: string) => `${WORD_NUM[w]} ${u}`,
+  )
 
   const iso = q.match(/\d{4}-\d{2}-\d{2}/g)
   if (iso) {
     const [x, y = x] = iso
     return x <= y ? { from: x, to: y } : { from: y, to: x }
   }
-  const n = q.match(/(\d{1,3})\s*hari/)
-  if (n && Number(n[1]) >= 1 && Number(n[1]) <= 90) return lastDays(Number(n[1]))
+  // "3 hari terakhir", "2 minggu terakhir"
+  const n = q.match(/(\d{1,3})\s*(hari|minggu|pekan)/)
+  if (n) {
+    const days = Number(n[1]) * (n[2] === 'hari' ? 1 : 7)
+    if (days >= 1 && days <= 90) return lastDays(days)
+  }
   if (/kemarin/.test(q)) return { from: ymd(addDays(now, -1)), to: ymd(addDays(now, -1)) }
   if (/hari ini/.test(q)) return { from: today, to: today }
+  // Akhir pekan = Sabtu–Minggu terakhir yang sudah lewat (atau "akhir pekan lalu")
+  if (/akhir\s*pekan|weekend/.test(q)) {
+    let sabtu = addDays(monday, 5)
+    if (/lalu/.test(q) || sabtu.getTime() > now.getTime()) sabtu = addDays(sabtu, -7)
+    return { from: ymd(sabtu), to: ymd(addDays(sabtu, 1)) }
+  }
   if (/(minggu|pekan) ini/.test(q)) return { from: ymd(monday), to: today }
   if (/(minggu|pekan) lalu/.test(q)) return { from: ymd(addDays(monday, -7)), to: ymd(addDays(monday, -1)) }
   if (/bulan ini/.test(q)) return monthRange()
@@ -58,6 +84,19 @@ function parseRange(q: string): Range | null {
     const m = now.getUTCMonth()
     return { from: ymd(new Date(Date.UTC(y, m - 1, 1))), to: ymd(new Date(Date.UTC(y, m, 0))) }
   }
+  if (/tahun lalu/.test(q)) {
+    const y = now.getUTCFullYear() - 1
+    return { from: `${y}-01-01`, to: `${y}-12-31` }
+  }
+  if (/tahun ini/.test(q)) return { from: `${now.getUTCFullYear()}-01-01`, to: today }
+  // "tanggal 5 November"
+  const dm = q.match(new RegExp(`tanggal\\s+(\\d{1,2})\\s*(?:dari\\s+|bulan\\s+)?(${BULAN_RE})\\b`))
+  if (dm && Number(dm[1]) >= 1 && Number(dm[1]) <= 31) {
+    const m = MONTHS[dm[2]]
+    const y = m > now.getUTCMonth() ? now.getUTCFullYear() - 1 : now.getUTCFullYear()
+    const day = new Date(Date.UTC(y, m, Number(dm[1])))
+    return { from: ymd(day), to: ymd(day) }
+  }
   const t = q.match(/tanggal\s+(\d{1,2})/)
   if (t) {
     const d = Number(t[1])
@@ -65,6 +104,13 @@ function parseRange(q: string): Range | null {
       const base = d > now.getUTCDate() ? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, d)) : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), d))
       return { from: ymd(base), to: ymd(base) }
     }
+  }
+  // "bulan November" / "November" — bulan depan berarti tahun lalu (belum terjadi)
+  const mo = q.match(new RegExp(`\\b(${BULAN_RE})\\b`))
+  if (mo) {
+    const m = MONTHS[mo[1]]
+    const y = m > now.getUTCMonth() ? now.getUTCFullYear() - 1 : now.getUTCFullYear()
+    return { from: ymd(new Date(Date.UTC(y, m, 1))), to: ymd(new Date(Date.UTC(y, m + 1, 0))) }
   }
   return null
 }
@@ -262,8 +308,8 @@ async function stockMovesSection() {
   return rows.map((m) => ({ produk: m.name, tipe: m.type, qty: m.qty, catatan: m.note, waktu: wibText(m.created_at) }))
 }
 
-async function promoSection() {
-  const s = await getSettings()
+async function promoSection(preloaded?: StoreSettings) {
+  const s = preloaded ?? (await getSettings())
   return {
     happyHour: { aktif: s.promo_enabled, mulai: s.promo_start, selesai: s.promo_end, diskonPersen: s.promo_persen },
     loyalitas: { nominalPerStempel: s.stamp_per, stempelUntukHadiah: s.stamp_goal, hadiah: s.stamp_reward },
@@ -272,22 +318,91 @@ async function promoSection() {
 
 // ---------- perakit ----------
 
-export async function buildContext(question: string): Promise<{ topik: string[]; data: Record<string, unknown> } | null> {
+// Pemisah pertanyaan perbandingan: "minggu ini vs kemarin", "bulan ini dibanding bulan lalu"
+const COMPARE_SEP = /\b(?:vs\.?|dibanding\w*|banding\w*|daripada|dengan)\b/
+
+// "minggu ini vs kemarin" → dua periode; pertanyaan biasa → satu periode
+export function parseQuestionRanges(q: string): { range: Range | null; base: Range | null } {
+  const parts = q.split(COMPARE_SEP)
+  const range = parseRange(parts[0])
+  const base = parts.length > 1 ? parseRange(parts.slice(1).join(' ')) : null
+  return { range, base }
+}
+
+export type ContextRefs = {
+  products: Product[]
+  customers: Customer[]
+  settings?: StoreSettings
+  /** Pertanyaan berjalan (pesan user terakhir) — sumber utama deteksi periode */
+  current?: string
+  /** Jawaban asisten sebelumnya — acuan resolve "yang kedua berapa?" */
+  previousAnswer?: string
+}
+
+// Rentang periode: utamakan pertanyaan berjalan; kalau kosong, pakai seluruh riwayat
+// ("omzet kemarin" lalu "yang paling laku?" masih dapat acuan kemarin)
+export function resolveRanges(current: string, fallback: string): { range: Range | null; base: Range | null } {
+  const own = parseQuestionRanges(current)
+  return own.range || own.base ? own : parseQuestionRanges(fallback)
+}
+
+// Pertanyaan lanjutan pendek atau menunjuk sesuatu: "yang kedua berapa?", "stoknya?"
+export const looksFollowup = (s: string) =>
+  s.length <= 30 || /\b(?:tadi|itu|tersebut|pertama|kedua|ketiga|keempat|terakhir|sebut)\b|nya\b/.test(s)
+
+// Nama produk/pelanggan yang disebut di jawaban sebelumnya (maksimal 3)
+export function namesFromAnswer(prevAnswer: string, items: { name: string }[]): string[] {
+  const prev = prevAnswer.toLowerCase()
+  return items
+    .map((i) => i.name.trim())
+    .filter((n) => n.length >= 3 && prev.includes(n.toLowerCase()))
+    .slice(0, 3)
+}
+
+export async function buildContext(question: string, refs?: ContextRefs): Promise<{ topik: string[]; data: Record<string, unknown> } | null> {
   const q = question.toLowerCase()
   const qTokens = new Set(tokens(q).filter((t) => !STOP.has(t)))
-  const range = parseRange(q)
+  const cur = (refs?.current ?? question).toLowerCase()
+  const { range, base: baseRange } = resolveRanges(cur, q)
   const sections: [string, () => Promise<unknown>][] = []
 
   for (const no of (question.match(/INV-[\w-]+/gi) ?? []).slice(0, 2)) {
     sections.push([`struk:${no}`, () => receiptDetail(no)])
   }
   if (range) sections.push([`ringkasan_periode`, () => periodSummary(range)])
+  else if (baseRange) sections.push([`ringkasan_periode`, () => periodSummary(baseRange)])
+  if (range && baseRange && (baseRange.from !== range.from || baseRange.to !== range.to)) {
+    sections.push([`ringkasan_pembanding`, () => periodSummary(baseRange)])
+  }
 
-  const [products, customers] = await Promise.all([getProducts(), getCustomers()])
-  for (const p of matchByName(products, (x) => x.name, qTokens, q)) {
+  const [products, customers] = refs
+    ? [refs.products, refs.customers]
+    : await Promise.all([getProducts(), getCustomers()])
+
+  // Pencocokan nama pakai riwayat; kalau pertanyaan berjalan tidak menunjuk produk/
+  // pelanggan mana pun tapi berupa lanjutan, sebut nama dari jawaban sebelumnya
+  let mQ = q
+  let mTokens = qTokens
+  let productHits = matchByName(products, (x) => x.name, mTokens, mQ)
+  let customerHits = matchByName(customers, (x) => x.name, mTokens, mQ)
+  const curTokens = new Set(tokens(cur).filter((t) => !STOP.has(t)))
+  const curHit =
+    matchByName(products, (x) => x.name, curTokens, cur).length +
+    matchByName(customers, (x) => x.name, curTokens, cur).length
+  if (curHit === 0 && refs?.previousAnswer && looksFollowup(cur)) {
+    const names = namesFromAnswer(refs.previousAnswer, [...products, ...customers])
+    if (names.length) {
+      mQ = `${mQ} ${names.join(' ')}`
+      mTokens = new Set(tokens(mQ).filter((t) => !STOP.has(t)))
+      productHits = matchByName(products, (x) => x.name, mTokens, mQ)
+      customerHits = matchByName(customers, (x) => x.name, mTokens, mQ)
+    }
+  }
+
+  for (const p of productHits) {
     sections.push([`produk:${p.name}`, () => productDetail(p, range)])
   }
-  for (const c of matchByName(customers, (x) => x.name, qTokens, q)) {
+  for (const c of customerHits) {
     sections.push([`pelanggan:${c.name}`, () => customerDetail(c)])
   }
 
@@ -296,7 +411,7 @@ export async function buildContext(question: string): Promise<{ topik: string[];
   if (/pengeluaran|pemasukan|biaya|\bkas\b|listrik|operasional|belanja|laba bersih|untung bersih/.test(q)) sections.push(['kas', () => cashSection(range)])
   if (/void|batal|dibatalkan/.test(q)) sections.push(['void_terakhir', voidSection])
   if (/riwayat stok|pergerakan|opname|pembelian|restock|stok masuk|stok keluar/.test(q)) sections.push(['pergerakan_stok', stockMovesSection])
-  if (/promo|happy hour|stempel|loyalitas|hadiah/.test(q)) sections.push(['promo_loyalitas', promoSection])
+  if (/promo|happy hour|stempel|loyalitas|hadiah/.test(q)) sections.push(['promo_loyalitas', () => promoSection(refs?.settings)])
 
   if (!sections.length) return null
 

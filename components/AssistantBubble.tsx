@@ -2,10 +2,16 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { takeChart } from '@/lib/chart'
+import type { ChartSpec } from '@/lib/chart'
+import { SpecChart } from '@/components/Charts'
 
 type Msg = { role: 'user' | 'assistant'; content: string }
 
 const SUGGESTIONS = ['Ringkasan hari ini', 'Stok apa yang menipis?', 'Produk terlaris bulan ini', 'Siapa yang kasbonnya paling besar?']
+
+const STORAGE_KEY = 'kasirku.assistant.chat.v1'
+const MAX_STORED = 40 // batas pesan yang disimpan di browser
 
 const THINKING = [
   'Bersuka ria dulu…',
@@ -40,11 +46,13 @@ function safeHref(h: string): string | null {
   return s ? `${path}?${s}` : path
 }
 
-// Pisahkan teks jawaban dari token tombol [[Label|/path]] dan saran [[?Pertanyaan]]
+// Pisahkan teks jawaban dari token tombol [[Label|/path]], saran [[?Pertanyaan]],
+// dan grafik [[chart|{json}]] (spesifikasi divalidasi ketat; JSON rusak → grafik dibuang)
 function splitActions(raw: string) {
   const actions: { label: string; href: string }[] = []
   const followups: string[] = []
-  const body = raw
+  const { text: noChart, spec: chart } = takeChart(raw)
+  const body = noChart
     .replace(/\[\[\s*\?\s*([^\]]{3,60}?)\s*\]\]/g, (_m, q: string) => {
       const t = q.trim()
       if (followups.length < 3 && !followups.includes(t)) followups.push(t)
@@ -60,7 +68,7 @@ function splitActions(raw: string) {
     .replace(/\[\[[^\]]*\]?$/, '') // token yang belum selesai saat streaming
     .replace(/[,;\s]+$/, '') // sisa koma/spasi di ujung setelah token dibuang
     .trim()
-  return { body, actions, followups }
+  return { body, actions, followups, chart }
 }
 
 function Inline({ text }: { text: string }) {
@@ -141,10 +149,38 @@ function Thinking() {
 export default function AssistantBubble() {
   const router = useRouter()
   const [open, setOpen] = useState(false)
-  const [msgs, setMsgs] = useState<Msg[]>([])
+  // Muat riwayat tersimpan supaya chat tidak hilang saat refresh (server selalu mulai kosong)
+  const [msgs, setMsgs] = useState<Msg[]>(() => {
+    if (typeof window === 'undefined') return []
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? 'null') as unknown
+      if (Array.isArray(saved)) {
+        return saved.filter(
+          (m): m is Msg =>
+            !!m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string',
+        )
+      }
+    } catch {
+      /* data rusak → mulai dari kosong */
+    }
+    return []
+  })
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const endRef = useRef<HTMLDivElement>(null)
+  const abortRef = useRef<AbortController | null>(null)
+
+  // Simpan tiap pesan berubah; debounce supaya tidak menulis tiap token streaming
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      try {
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(msgs.slice(-MAX_STORED)))
+      } catch {
+        /* penyimpanan penuh/ditolak → abaikan */
+      }
+    }, 400)
+    return () => window.clearTimeout(t)
+  }, [msgs])
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -156,6 +192,9 @@ export default function AssistantBubble() {
     router.push(href)
     if (window.innerWidth < 768) setOpen(false)
   }
+
+  // Hentikan jawaban yang sedang streaming; server juga otomatis membatalkan panggilan modelnya
+  const stop = () => abortRef.current?.abort()
 
   const send = async (text: string) => {
     const t = text.trim()
@@ -169,6 +208,9 @@ export default function AssistantBubble() {
     setInput('')
     setBusy(true)
 
+    const ac = new AbortController()
+    abortRef.current = ac
+
     const setLast = (content: string) =>
       setMsgs((cur) => cur.map((m, i) => (i === cur.length - 1 ? { ...m, content } : m)))
 
@@ -177,6 +219,7 @@ export default function AssistantBubble() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: next }),
+        signal: ac.signal,
       })
       if (!res.ok || !res.body) {
         const data = await res.json().catch(() => ({}))
@@ -212,9 +255,22 @@ export default function AssistantBubble() {
         if (!got) setLast('⚠️ Tidak ada jawaban dari model, coba lagi.')
       }
     } catch {
-      setLast('⚠️ Gagal terhubung ke server')
+      if (ac.signal.aborted) {
+        // Dihentikan lewat tombol Stop: pertahankan jawaban yang sudah masuk
+        setMsgs((cur) =>
+          cur.map((m, i) =>
+            i === cur.length - 1 && m.role === 'assistant' && !m.content.trim()
+              ? { ...m, content: '⏹ Dihentikan.' }
+              : m,
+          ),
+        )
+      } else {
+        setLast('⚠️ Gagal terhubung ke server')
+      }
+    } finally {
+      abortRef.current = null
+      setBusy(false)
     }
-    setBusy(false)
   }
 
   return (
@@ -260,10 +316,15 @@ export default function AssistantBubble() {
             {msgs.map((m, i) => {
               const isLast = i === msgs.length - 1
               const streaming = busy && isLast
-              const { body, actions, followups } =
+              const { body, actions, followups, chart } =
                 m.role === 'assistant'
                   ? splitActions(m.content)
-                  : { body: m.content, actions: [] as { label: string; href: string }[], followups: [] as string[] }
+                  : {
+                      body: m.content,
+                      actions: [] as { label: string; href: string }[],
+                      followups: [] as string[],
+                      chart: null as ChartSpec | null,
+                    }
 
               return (
                 <div
@@ -284,9 +345,10 @@ export default function AssistantBubble() {
                 >
                   {m.role === 'user' ? (
                     m.content
-                  ) : body ? (
+                  ) : body || chart ? (
                     <>
-                      <Markdown text={body} />
+                      {body && <Markdown text={body} />}
+                      {chart && <SpecChart spec={chart} />}
                       {!streaming && actions.length > 0 && (
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
                           {actions.map((a) => (
@@ -327,7 +389,11 @@ export default function AssistantBubble() {
               placeholder="Tulis pertanyaan…"
               disabled={busy}
             />
-            <button className="btn btn-primary" disabled={busy || !input.trim()} onClick={() => send(input)}>Kirim</button>
+            {busy ? (
+              <button className="btn" onClick={stop} aria-label="Hentikan jawaban">⏹ Stop</button>
+            ) : (
+              <button className="btn btn-primary" disabled={!input.trim()} onClick={() => send(input)}>Kirim</button>
+            )}
           </div>
         </div>
       )}

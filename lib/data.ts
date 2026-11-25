@@ -216,7 +216,19 @@ export async function getShifts(limit = 10): Promise<Shift[]> {
   })
 }
 
-function mapShift(s: Record<string, any>, salesTotal: number, salesCash: number, salesNoncash: number): Shift {
+type ShiftRow = {
+  id: string
+  user_email: string
+  opening_cash: unknown
+  expected_cash: unknown
+  counted_cash: unknown
+  difference: unknown
+  note: string
+  opened_at: Date
+  closed_at: Date | null
+}
+
+function mapShift(s: ShiftRow, salesTotal: number, salesCash: number, salesNoncash: number): Shift {
   return {
     id: s.id,
     user_email: s.user_email,
@@ -286,7 +298,7 @@ export async function getBusyHours(): Promise<{ matrix: number[][]; max: number;
   return { matrix, max, peak }
 }
 
-export async function getStats() {
+export async function getStats(opts: { products?: Product[]; recent?: boolean } = {}) {
   const [today] = await sql`
     select coalesce(sum(total), 0) as revenue, count(*)::int as count
     from sales where created_at >= date_trunc('day', now()) and voided_at is null`
@@ -299,7 +311,7 @@ export async function getStats() {
     select coalesce(sum(si.cost * si.qty), 0) as hpp, coalesce(sum(si.price * si.qty), 0) as revenue
     from sale_items si join sales s on s.id = si.sale_id
     where s.created_at >= date_trunc('month', now()) and s.voided_at is null`
-  const low = await getProducts()
+  const low = opts.products ?? (await getProducts())
   return {
     todayRevenue: n(today.revenue),
     todayCount: today.count,
@@ -308,7 +320,8 @@ export async function getStats() {
     monthHpp: n(hpp.hpp),
     monthRevenue: n(hpp.revenue),
     lowStock: low.filter((p) => p.stock <= p.min_stock),
-    recentSales: await getSales(5),
+    // recentSales hanya untuk dashboard; lewati bila tidak dipakai (hemat 2 query)
+    recentSales: opts.recent === false ? [] : await getSales(5),
   }
 }
 
