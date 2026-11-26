@@ -16,7 +16,12 @@
   ],
   "vars": {
     "KENARI_BASE": "https://kenari.id/v1",
-    "KENARI_MODEL": "glm-4-7-flash:free"
+    "KENARI_MODEL": "glm-4-7-flash:free",
+    "AWS_ENDPOINT_URL_S3": "https://br-frosty-glade-aor08ouv.storage.c-2.ap-southeast-1.aws.neon.tech",
+    "AWS_REGION": "ap-southeast-1",
+    "NEON_BUCKET": "product-images",
+    "NEON_BRANCH_ID": "br-frosty-glade-aor08ouv",
+    "NEON_FUNCTION_HOST_SUFFIX": ".compute.c-2.ap-southeast-1.aws.neon.tech"
   },
   "observability": { "enabled": true }
 }

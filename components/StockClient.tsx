@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { adjustStock, fetchMoves, saveProduct, stockOpname, uploadProductImage } from '@/lib/actions'
+import { adjustStock, deleteProduct, fetchMoves, saveProduct, stockOpname, uploadProductImage } from '@/lib/actions'
 import { rupiah, tanggal } from '@/lib/format'
 import Icon from './Icon'
 import type { Product, StockMove } from '@/lib/types'
@@ -45,6 +45,7 @@ export default function StockClient({ products }: { products: Product[] }) {
   const [toast, setToast] = useState('')
   const [busy, setBusy] = useState(false)
   const [opname, setOpname] = useState<{ counts: Record<string, string>; note: string } | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Product | null>(null)
 
   useEffect(() => {
     if (!toast) return
@@ -211,6 +212,21 @@ export default function StockClient({ products }: { products: Product[] }) {
     }
   }
 
+  const confirmDelete = async () => {
+    if (!deleteTarget) return
+    setBusy(true)
+    setError('')
+    const res = await deleteProduct(deleteTarget.id)
+    setBusy(false)
+    if (res.ok) {
+      setDeleteTarget(null)
+      setToast(`${deleteTarget.name} dihapus`)
+      router.refresh()
+    } else {
+      setError(res.error)
+    }
+  }
+
   const set = (key: keyof FormState) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm((f) => (f ? { ...f, [key]: e.target.value } : f))
 
@@ -273,6 +289,13 @@ export default function StockClient({ products }: { products: Product[] }) {
                       <div className="flex justify-end gap-2">
                         <button className="btn btn-ghost btn-sm" onClick={() => openEdit(p)}>Edit</button>
                         <button className="btn btn-ghost btn-sm" onClick={() => openAdjust(p)}>Stok</button>
+                        <button
+                          className="btn btn-danger btn-sm"
+                          title={`Hapus ${p.name}`}
+                          onClick={() => { setError(''); setDeleteTarget(p) }}
+                        >
+                          <Icon name="trash" size={14} /> Hapus
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -528,6 +551,24 @@ export default function StockClient({ products }: { products: Product[] }) {
               <button className="btn btn-ghost" onClick={() => setOpname(null)}>Batal</button>
               <button className="btn btn-primary" disabled={busy || opnameChanged.length === 0 || opnameInvalid} onClick={submitOpname}>
                 {busy ? 'Menyimpan…' : `Terapkan ${opnameChanged.length} penyesuaian`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div className="modal-overlay" onClick={() => setDeleteTarget(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2>Hapus produk</h2>
+            <p className="muted">
+              Hapus <b style={{ color: 'var(--ink)' }}>{deleteTarget.name}</b> dari daftar produk? Riwayat penjualan tetap tersimpan.
+            </p>
+            {error && <p className="error-text">{error}</p>}
+            <div className="modal-actions">
+              <button className="btn btn-ghost" onClick={() => setDeleteTarget(null)}>Batal</button>
+              <button className="btn btn-danger" disabled={busy} onClick={confirmDelete}>
+                {busy ? 'Menghapus…' : 'Hapus produk'}
               </button>
             </div>
           </div>

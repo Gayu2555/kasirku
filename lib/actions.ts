@@ -250,6 +250,20 @@ export async function adjustStock(productId: string, delta: number, note: string
   }
 }
 
+export async function deleteProduct(id: string): Promise<Result> {
+  if (!(await actionGuard('owner'))) return fail('Aksi ini khusus owner')
+  try {
+    const [p] = await sql`select image_url from products where id = ${id} and is_active`
+    if (!p) return fail('Produk tidak ditemukan')
+    await sql`update products set is_active = false where id = ${id}`
+    if (p.image_url) await deleteImage(p.image_url)
+    done()
+    return { ok: true }
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Gagal menghapus produk')
+  }
+}
+
 export async function addCashEntry(
   type: 'income' | 'expense',
   amount: number,
